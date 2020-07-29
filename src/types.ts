@@ -16,12 +16,14 @@
 
 import * as types from '@opentelemetry/api';
 
+import { Libhoney, LibhoneyOptions } from 'libhoney';
+
 /**
  * Options for Honeycomb configuration
  */
 export interface ExporterConfig {
   logger?: types.Logger;
   serviceName: string;
-  apiHost?: string; // default: 'api.honeycomb.io'
+  forceFlush?: boolean
+  libhoney: Libhoney | LibhoneyOptions
 }
-

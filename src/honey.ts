@@ -15,45 +15,38 @@
  */
 
 import * as api from '@opentelemetry/api';
-import { ExportResult } from '@opentelemetry/base';
-import { NoopLogger } from '@opentelemetry/core';
+import { NoopLogger, ExportResult } from '@opentelemetry/core';
 import { ReadableSpan, SpanExporter } from '@opentelemetry/tracing';
-import { Socket } from 'dgram';
-import { spanToThrift } from './transform';
-import * as libhoney from 'libhoney';
+import { visitTransformedEvents } from './transform';
+import { ExporterConfig } from './types'
+import { Libhoney, Builder } from 'libhoney';
 
 /**
  * Format and sends span information to Honeycomb Exporter.
  */
 export class HoneycombExporter implements SpanExporter {
   private readonly _logger: api.Logger;
-  private readonly _process: jaegerTypes.ThriftProcess;
-  private readonly _sender: typeof jaegerTypes.UDPSender;
+  private readonly _honey: Libhoney;
+  private readonly _builder: Builder;
   private readonly _forceFlushOnShutdown: boolean = true;
-  private readonly _onShutdownFlushTimeout: number;
 
-  constructor(config: jaegerTypes.ExporterConfig) {
+  constructor(config: ExporterConfig) {
     this._logger = config.logger || new NoopLogger();
-    const tags: jaegerTypes.Tag[] = config.tags || [];
     this._forceFlushOnShutdown =
-      typeof config.forceFlush === 'boolean' ? config.forceFlush : true;
-    this._onShutdownFlushTimeout =
-      typeof config.flushTimeout === 'number' ? config.flushTimeout : 2000;
-
-    this._sender = new jaegerTypes.UDPSender(config);
-    if (this._sender._client instanceof Socket) {
-      // unref socket to prevent it from keeping the process running
-      this._sender._client.unref();
-    }
-
-    this._process = {
+    typeof config.forceFlush === 'boolean' ? config.forceFlush : true;
+    
+    this._honey = config.libhoney instanceof Libhoney ?
+        config.libhoney :
+        new Libhoney({
+          ...config.libhoney,
+          // TODO(ajbouh) consider including responseCallback so we can count and log events as they're flushed
+        })
+    this._builder = this._honey.newBuilder({
       serviceName: config.serviceName,
-      tags: jaegerTypes.ThriftUtils.getThriftTags(tags),
-    };
-    this._sender.setProcess(this._process);
+    }, {})
   }
 
-  /** Exports a list of spans to Jaeger. */
+  /** Exports a list of spans to Honeycomb. */
   export(
     spans: ReadableSpan[],
     resultCallback: (result: ExportResult) => void
@@ -61,9 +54,9 @@ export class HoneycombExporter implements SpanExporter {
     if (spans.length === 0) {
       return resultCallback(ExportResult.SUCCESS);
     }
-    this._logger.debug('Jaeger exporter export');
+    this._logger.debug('Honeycomb exporter export');
     this._sendSpans(spans, resultCallback).catch(err => {
-      this._logger.error(`JaegerExporter failed to export: ${err}`);
+      this._logger.error(`Honeycomb failed to export: ${err}`);
     });
   }
 
@@ -71,57 +64,34 @@ export class HoneycombExporter implements SpanExporter {
   shutdown(): void {
     if (!this._forceFlushOnShutdown) return;
     // Make an optimistic flush.
-    this._flush();
-    // Sleeping x seconds before closing the sender's connection to ensure
-    // all spans are flushed.
-    setTimeout(() => {
-      this._sender.close();
-    }, this._onShutdownFlushTimeout);
+    this.flush();
   }
 
-  /** Transform spans and sends to Jaeger service. */
+  /** Transform spans and sends to Honeycomb service. */
   private async _sendSpans(
     spans: ReadableSpan[],
     done?: (result: ExportResult) => void
   ) {
-    const thriftSpan = spans.map(span => spanToThrift(span));
-    for (const span of thriftSpan) {
+    let total = 0
+    for (const span of spans) {
       try {
-        await this._append(span);
+        visitTransformedEvents(this._builder, span, event => {
+          ++total
+          event.sendPresampled()
+        })
       } catch (err) {
-        this._logger.error(`failed to append span: ${err}`);
+        this._logger.error(`failed to enqueued span: ${err}`);
         // TODO right now we break out on first error, is that desirable?
         if (done) return done(ExportResult.FAILED_NOT_RETRYABLE);
       }
     }
-    this._logger.debug('successful append for : %s', thriftSpan.length);
-
-    // Flush all spans on each export. No-op if span buffer is empty
-    await this._flush();
-
+    this._logger.debug('successfully enqueued %s spans and %s additional implicit event(s)', spans.length, total - spans.length);
+    
     if (done) return done(ExportResult.SUCCESS);
   }
 
-  private async _append(span: jaegerTypes.ThriftSpan): Promise<number> {
-    return new Promise((resolve, reject) => {
-      this._sender.append(span, (count: number, err?: string) => {
-        if (err) {
-          return reject(new Error(err));
-        }
-        resolve(count);
-      });
-    });
-  }
-
-  private async _flush(): Promise<void> {
-    await new Promise((resolve, reject) => {
-      this._sender.flush((_count: number, err?: string) => {
-        if (err) {
-          return reject(new Error(err));
-        }
-        this._logger.debug('successful flush for %s spans', _count);
-        resolve();
-      });
-    });
+  async flush(): Promise<void> {
+    await this._honey.flush()
+    this._logger.debug('successful flush for unknown number of spans',);
   }
 }

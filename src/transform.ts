@@ -14,108 +14,106 @@
  * limitations under the License.
  */
 
-import { Link, CanonicalCode, SpanKind } from '@opentelemetry/api';
+import { CanonicalCode, SpanKind } from '@opentelemetry/api';
+import { randomSpanId } from '@opentelemetry/core';
 import { ReadableSpan } from '@opentelemetry/tracing';
 import {
   hrTimeToMilliseconds,
-  hrTimeToMicroseconds,
+  hrTimeDuration,
 } from '@opentelemetry/core';
-import { Event } from 'libhoney/event'
+import { Builder, Event as HoneyEvent } from 'libhoney';
+
+export type EventVisitor = (event: HoneyEvent) => void
+
+// Based on: https://github.com/honeycombio/opentelemetry-exporter-go/blob/c65cc92b8f6e7e26b813944fcf0dd132a63656fd/honeycomb/honeycomb.go#L535
+// link represents a link to a trace and span that lives elsewhere.
+// TraceID and ParentID are used to identify the span with which the trace is associated
+// We are modeling Links for now as child spans rather than properties of the event.
+function refsFromSpan(builder: Builder, span: ReadableSpan, visitor: EventVisitor) {
+  const ctx = span.spanContext
+  const traceId = ctx.traceId
+  const pSpanId = ctx.spanId
+  for (const link of span.links) {
+    const lTraceId = link.context.traceId
+    const lSpanId = link.context.spanId
+    const ref = builder.newEvent()
+    ref.add({
+      'duration_ms': 0, // present in python, not present in golang
+      'trace.trace_id': traceId,
+      'trace.parent_id': pSpanId,
+      'trace.span_id': randomSpanId(),
+      'trace.link.trace_id': lTraceId,
+      'trace.link.span_id': lSpanId,
+      'meta.span_type': 'link',
+			// TODO(ajbouh): properly set the reference type when specs are defined
+      // see https://github.com/open-telemetry/opentelemetry-specification/issues/65
+      'ref_type': 0,
+    })
+    if (link.attributes) {
+      ref.add(link.attributes)
+    }
+    visitor(ref)
+  }
+}
+
+function logsFromSpan(builder: Builder, span: ReadableSpan, visitor: EventVisitor) {
+  const ctx = span.spanContext
+  const traceId = ctx.traceId
+  const pSpanId = ctx.spanId
+  const pSpanName = span.name
+  for (const event of span.events) {
+    const l = builder.newEvent()
+    l.timestamp = new Date(hrTimeToMilliseconds(event.time))
+    l.add({
+      'duration_ms': 0, // present in python, not present in golang
+      'name': event.name,
+      'trace.trace_id': traceId,
+      'trace.parent_id': pSpanId,
+      'trace.span_id': randomSpanId(),
+      'trace.parent_name': pSpanName,
+      'meta.span_type': 'span_event',
+    })
+    if (event.attributes) {
+      l.add(event.attributes)
+    }
+    visitor(l)
+  }
+}
 
 /**
  * Translate OpenTelemetry ReadableSpan to Honeycomb Event
  * @param span Span to be translated
  */
-export function spanToThrift(span: ReadableSpan): Span {
-  const traceId = span.spanContext.traceId.padStart(32, '0');
-  const traceIdHigh = traceId.slice(0, 16);
-  const traceIdLow = traceId.slice(16);
-  const parentSpan = span.parentSpanId
-    ? Utils.encodeInt64(span.parentSpanId)
-    : ThriftUtils.emptyBuffer;
+export function visitTransformedEvents(builder: Builder, span: ReadableSpan, visitor: EventVisitor) {
+  const ctx = span.spanContext
+  const traceId = ctx.traceId
+  const spanId = ctx.spanId
+  const start_ms = hrTimeToMilliseconds(span.startTime)
+  const duration_ms = hrTimeDuration(span.startTime, span.endTime)
+  const d = builder.newEvent()
+  d.timestamp = new Date(start_ms)
+  d.add({
+    'trace.trace_id': traceId,
+    'trace.parent_id': span.parentSpanId,
+    'trace.span_id': spanId,
+    'name': span.name,
+    'duration_ms': duration_ms,
+    
+    "status.code": span.status.code, // https://github.com/honeycombio/opentelemetry-exporter-go/blob/c65cc92b8f6e7e26b813944fcf0dd132a63656fd/honeycomb/honeycomb.go#L570
+    'response.status_code': span.status.code, // is this right?
+    'status.message': span.status.message,
+    'span.kind': SpanKind[span.kind],  // meta.span_type?
+    'meta.span_type': SpanKind[span.kind],  // is this right?
+    // 'has_remote_parent': Present in golang, not present in python?
+  })
+  // TODO: use sampling_decision attributes for sample rate.
+  d.add(span.attributes)
 
-  const tags = Object.keys(span.attributes).map(
-    (name): Tag => ({ key: name, value: toTagValue(span.attributes[name]) })
-  );
-  tags.push({ key: 'status.code', value: span.status.code });
-  tags.push({ key: 'status.name', value: CanonicalCode[span.status.code] });
-  if (span.status.message) {
-    tags.push({ key: 'status.message', value: span.status.message });
-  }
-  // Ensure that if Status.Code is not OK, that we set the "error" tag on the
-  // Jaeger span.
+  // Ensure that if Status.Code is not OK, that we set the 'error' tag on the span.
   if (span.status.code !== CanonicalCode.OK) {
-    tags.push({ key: 'error', value: true });
+    d.addField('error', true)
   }
-
-  if (span.kind !== undefined) {
-    tags.push({ key: 'span.kind', value: SpanKind[span.kind] });
-  }
-  Object.keys(span.resource.labels).forEach(name =>
-    tags.push({
-      key: name,
-      value: toTagValue(span.resource.labels[name]),
-    })
-  );
-
-  const spanTags: ThriftTag[] = ThriftUtils.getThriftTags(tags);
-
-  const logs = span.events.map(
-    (event): Log => {
-      const fields: Tag[] = [{ key: 'message.id', value: event.name }];
-      const attrs = event.attributes;
-      if (attrs) {
-        Object.keys(attrs).forEach(attr =>
-          fields.push({ key: attr, value: toTagValue(attrs[attr]) })
-        );
-      }
-      return { timestamp: hrTimeToMilliseconds(event.time), fields };
-    }
-  );
-  const spanLogs: ThriftLog[] = ThriftUtils.getThriftLogs(logs);
-
-  return {
-    traceIdLow: Utils.encodeInt64(traceIdLow),
-    traceIdHigh: Utils.encodeInt64(traceIdHigh),
-    spanId: Utils.encodeInt64(span.spanContext.spanId),
-    parentSpanId: parentSpan,
-    operationName: span.name,
-    references: spanLinksToThriftRefs(span.links, span.parentSpanId),
-    flags: span.spanContext.traceFlags || DEFAULT_FLAGS,
-    startTime: Utils.encodeInt64(hrTimeToMicroseconds(span.startTime)),
-    duration: Utils.encodeInt64(hrTimeToMicroseconds(span.duration)),
-    tags: spanTags,
-    logs: spanLogs,
-  };
-}
-
-/** Translate OpenTelemetry {@link Link}s to Honeycomb Event. */
-function spanLinksToThriftRefs(
-  links: Link[],
-  parentSpanId?: string
-): ThriftReference[] {
-  return links
-    .map((link): ThriftReference | null => {
-      if (link.context.spanId === parentSpanId) {
-        const refType = ThriftReferenceType.CHILD_OF;
-        const traceId = link.context.traceId;
-        const traceIdHigh = Utils.encodeInt64(traceId.slice(0, 16));
-        const traceIdLow = Utils.encodeInt64(traceId.slice(16));
-        const spanId = Utils.encodeInt64(link.context.spanId);
-        return { traceIdLow, traceIdHigh, spanId, refType };
-      }
-      return null;
-    })
-    .filter(ref => !!ref) as ThriftReference[];
-}
-
-/** Translate OpenTelemetry attribute value to Honeycomb key/value pair. */
-function toTagValue(value: unknown): TagValue {
-  const valueType = typeof value;
-  if (valueType === 'boolean') {
-    return value as boolean;
-  } else if (valueType === 'number') {
-    return value as number;
-  }
-  return String(value);
+  refsFromSpan(builder, span, visitor)
+  logsFromSpan(builder, span, visitor)
+  visitor(d)
 }

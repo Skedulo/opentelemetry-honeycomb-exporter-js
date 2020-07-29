@@ -14,8 +14,10 @@
  * limitations under the License.
  */
 
+ // TODO finish this and get it running
+
 import * as assert from 'assert';
-import { JaegerExporter } from '../src';
+import { HoneycombExporter } from '../src';
 import { NoopLogger } from '@opentelemetry/core';
 import * as types from '@opentelemetry/api';
 import { ThriftProcess } from '../src/types';
@@ -24,10 +26,10 @@ import { ExportResult } from '@opentelemetry/base';
 import { TraceFlags } from '@opentelemetry/api';
 import { Resource } from '@opentelemetry/resources';
 
-describe('JaegerExporter', () => {
+describe('HoneycombExporter', () => {
   describe('constructor', () => {
     it('should construct an exporter', () => {
-      const exporter = new JaegerExporter({ serviceName: 'opentelemetry' });
+      const exporter = new HoneycombExporter({ serviceName: 'opentelemetry' });
       assert.ok(typeof exporter.export === 'function');
       assert.ok(typeof exporter.shutdown === 'function');
       const process: ThriftProcess = exporter['_sender']._process;
@@ -36,12 +38,12 @@ describe('JaegerExporter', () => {
     });
 
     it('should construct an exporter with host, port, logger and tags', () => {
-      const exporter = new JaegerExporter({
+      const exporter = new HoneycombExporter({
         serviceName: 'opentelemetry',
         host: 'localhost',
         port: 8080,
         logger: new NoopLogger(),
-        tags: [{ key: 'opentelemetry-exporter-jaeger', value: '0.1.0' }],
+        tags: [{ key: 'opentelemetry-exporter-honeycomb', value: '0.1.0' }],
       });
       assert.ok(typeof exporter.export === 'function');
       assert.ok(typeof exporter.shutdown === 'function');
@@ -49,13 +51,13 @@ describe('JaegerExporter', () => {
       const process: ThriftProcess = exporter['_sender']._process;
       assert.strictEqual(process.serviceName, 'opentelemetry');
       assert.strictEqual(process.tags.length, 1);
-      assert.strictEqual(process.tags[0].key, 'opentelemetry-exporter-jaeger');
+      assert.strictEqual(process.tags[0].key, 'opentelemetry-exporter-honeycomb');
       assert.strictEqual(process.tags[0].vType, 'STRING');
       assert.strictEqual(process.tags[0].vStr, '0.1.0');
     });
 
     it('should construct an exporter with forceFlush and flushTimeout', () => {
-      const exporter = new JaegerExporter({
+      const exporter = new HoneycombExporter({
         serviceName: 'opentelemetry',
         forceFlush: true,
         flushTimeout: 5000,
@@ -68,7 +70,7 @@ describe('JaegerExporter', () => {
     });
 
     it('should construct an exporter without forceFlush and flushTimeout', () => {
-      const exporter = new JaegerExporter({
+      const exporter = new HoneycombExporter({
         serviceName: 'opentelemetry',
       });
       assert.ok(typeof exporter.export === 'function');
@@ -79,7 +81,7 @@ describe('JaegerExporter', () => {
     });
 
     it('should construct an exporter with forceFlush = false', () => {
-      const exporter = new JaegerExporter({
+      const exporter = new HoneycombExporter({
         serviceName: 'opentelemetry',
         forceFlush: false,
       });
@@ -91,9 +93,9 @@ describe('JaegerExporter', () => {
   });
 
   describe('export', () => {
-    let exporter: JaegerExporter;
+    let exporter: HoneycombExporter;
     beforeEach(() => {
-      exporter = new JaegerExporter({
+      exporter = new HoneycombExporter({
         serviceName: 'opentelemetry',
       });
     });
@@ -108,7 +110,7 @@ describe('JaegerExporter', () => {
       });
     });
 
-    it('should send spans to Jaeger backend and return with Success', () => {
+    it('should send spans to Honeycomb backend and return with Success', () => {
       const spanContext = {
         traceId: 'd4cda95b652f4a1592b449d5929fda1b',
         spanId: '6e0c63257de34c92',
