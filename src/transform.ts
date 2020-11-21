@@ -19,7 +19,6 @@ import { randomSpanId } from '@opentelemetry/core';
 import { ReadableSpan } from '@opentelemetry/tracing';
 import {
   hrTimeToMilliseconds,
-  hrTimeDuration,
 } from '@opentelemetry/core';
 import { Builder, Event as HoneyEvent } from 'libhoney';
 
@@ -29,7 +28,7 @@ export type EventVisitor = (event: HoneyEvent) => void
 // link represents a link to a trace and span that lives elsewhere.
 // TraceID and ParentID are used to identify the span with which the trace is associated
 // We are modeling Links for now as child spans rather than properties of the event.
-function refsFromSpan(builder: Builder, span: ReadableSpan, visitor: EventVisitor) {
+function refsFromSpan(builder: Builder, span: ReadableSpan, delta: number, visitor: EventVisitor) {
   const ctx = span.spanContext
   const traceId = ctx.traceId
   const pSpanId = ctx.spanId
@@ -56,14 +55,14 @@ function refsFromSpan(builder: Builder, span: ReadableSpan, visitor: EventVisito
   }
 }
 
-function logsFromSpan(builder: Builder, span: ReadableSpan, visitor: EventVisitor) {
+function logsFromSpan(builder: Builder, span: ReadableSpan, delta: number, visitor: EventVisitor) {
   const ctx = span.spanContext
   const traceId = ctx.traceId
   const pSpanId = ctx.spanId
   const pSpanName = span.name
   for (const event of span.events) {
     const l = builder.newEvent()
-    l.timestamp = new Date(hrTimeToMilliseconds(event.time))
+    l.timestamp = new Date(delta + hrTimeToMilliseconds(event.time))
     l.add({
       'duration_ms': 0, // present in python, not present in golang
       'name': event.name,
@@ -84,13 +83,14 @@ function logsFromSpan(builder: Builder, span: ReadableSpan, visitor: EventVisito
  * Translate OpenTelemetry ReadableSpan to Honeycomb Event
  * @param span Span to be translated
  */
-export function visitTransformedEvents(builder: Builder, span: ReadableSpan, visitor: EventVisitor) {
+export function visitTransformedEvents(builder: Builder, span: ReadableSpan, delta: number, visitor: EventVisitor) {
   const ctx = span.spanContext
   const traceId = ctx.traceId
   const spanId = ctx.spanId
-  const start_ms = hrTimeToMilliseconds(span.startTime)
-  const duration_ms = hrTimeDuration(span.startTime, span.endTime)
+  const start_ms = delta + hrTimeToMilliseconds(span.startTime)
+  const duration_ms = hrTimeToMilliseconds(span.duration);
   const d = builder.newEvent()
+
   d.timestamp = new Date(start_ms)
   d.add({
     'trace.trace_id': traceId,
@@ -113,7 +113,7 @@ export function visitTransformedEvents(builder: Builder, span: ReadableSpan, vis
   if (span.status.code !== CanonicalCode.OK) {
     d.addField('error', true)
   }
-  refsFromSpan(builder, span, visitor)
-  logsFromSpan(builder, span, visitor)
+  refsFromSpan(builder, span, delta, visitor)
+  logsFromSpan(builder, span, delta, visitor)
   visitor(d)
 }

@@ -29,6 +29,7 @@ export class HoneycombExporter implements SpanExporter {
   private readonly _honey: Libhoney;
   private readonly _builder: Builder;
   private readonly _forceFlushOnShutdown: boolean = true;
+  private readonly _delta: number;
 
   constructor(config: ExporterConfig) {
     this._logger = config.logger || new NoopLogger();
@@ -44,6 +45,13 @@ export class HoneycombExporter implements SpanExporter {
     this._builder = this._honey.newBuilder({
       serviceName: config.serviceName,
     }, {})
+
+    // HACK(adamb) Workaround for https://github.com/open-telemetry/opentelemetry-js/issues/852
+    if (typeof window !== 'undefined' && window.performance) {
+      this._delta = new Date().getTime() - new Date(performance.timeOrigin + performance.now()).getTime();
+    } else {
+      this._delta = 0;
+    }
   }
 
   /** Exports a list of spans to Honeycomb. */
@@ -54,7 +62,7 @@ export class HoneycombExporter implements SpanExporter {
     if (spans.length === 0) {
       return resultCallback(ExportResult.SUCCESS);
     }
-    this._logger.debug('Honeycomb exporter export');
+    this._logger.debug('Honeycomb exporter export', spans);
     this._sendSpans(spans, resultCallback).catch(err => {
       this._logger.error(`Honeycomb failed to export: ${err}`);
     });
@@ -75,7 +83,7 @@ export class HoneycombExporter implements SpanExporter {
     let total = 0
     for (const span of spans) {
       try {
-        visitTransformedEvents(this._builder, span, event => {
+        visitTransformedEvents(this._builder, span, this._delta, event => {
           ++total
           event.sendPresampled()
         })
