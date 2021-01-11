@@ -59,6 +59,6 @@
     "@opentelemetry/base": "^0.6.0",
     "@opentelemetry/core": "^0.6.0",
     "@opentelemetry/tracing": "^0.6.0",
-    "libhoney": "^2.0.2",
+    "libhoney": "^2.0.2"
   }
 }
